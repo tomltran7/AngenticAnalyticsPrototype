@@ -1,6 +1,6 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as XLSX from "xlsx";
-import { Bot, Download, Play, RefreshCcw, ShieldAlert, UploadCloud } from "lucide-react";
+import { Bot, Download, Play, RefreshCcw, ShieldAlert, UploadCloud, ChevronRight } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar, PieChart, Pie, Cell, Sankey, ScatterChart, Scatter } from "recharts";
 
 /** See README for column mapping. This is the compact version. */
@@ -40,7 +40,7 @@ type Claim = {
   serviceLine: string;
 };
 
-type Msg = { id: string; role: "user" | "assistant"; text: string; csv?: string };
+type Msg = { id: string; role: "user" | "assistant"; text: string; node?: React.ReactNode; csv?: string; followUpQuestions?: string[] };
 type TraceItem = { id: string; kind: "think" | "tool"; name: string; status: "running" | "done"; detail?: string };
 
 const NL = String.fromCharCode(10);
@@ -150,6 +150,113 @@ function reasonBreakdown(data:Claim[],k=6){ const m=groupBy(data,r=>r.reason||"(
 function parseThreshold(text:string){ const s=(text||"").toLowerCase(); const m=s.match(/[0-9]+/); const n=m?Number(m[0]):NaN; if(!Number.isFinite(n)||n<=0) return 100000; if(s.includes("k")) return n*1000; if(n>=200&&n<=999) return n*1000; return n; }
 function parseIntent(q:string){ const t=(q||"").toLowerCase(); const days=t.includes("90")||t.includes("quarter")?90:t.includes("7")||t.includes("week")?7:30; const threshold=(t.includes("$")||t.includes("k")||t.includes("over")||t.includes(">="))?parseThreshold(t):100000; const wants={topProviders:t.includes("provider"),concentration:t.includes("concentration"),reasons:t.includes("reason")||t.includes("domain"),export:t.includes("export")||t.includes("csv")||t.includes("download")}; return {days,threshold,wants}; }
 
+const ChatPanel = React.memo(({
+  messages,
+  send,
+  downloadCSV,
+  lastCsv,
+  clearChat
+}: {
+  messages: Msg[];
+  send: (text: string) => void;
+  downloadCSV: (filename:string,text:string)=>void;
+  lastCsv: string;
+  clearChat: () => void;
+}) => {
+  const [query, setQuery] = useState("");
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const bottomRef = useRef<HTMLDivElement | null>(null);
+  
+  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
+  
+  const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    setQuery(e.target.value);
+    if (textareaRef.current) {
+      textareaRef.current.style.height = "auto";
+      textareaRef.current.style.height = Math.min(textareaRef.current.scrollHeight, 200) + "px";
+    }
+  };
+
+  return (
+    <div className="flex flex-col h-full">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="text-lg font-semibold">Agent</div>
+          <div className="text-sm text-muted-foreground">Light+</div>
+        </div>
+        <div className="flex gap-2">
+          <button className="px-3 py-2 rounded-xl border text-sm" onClick={() => setQuery("Top providers over $200k last 90 days; export csv")}> 
+            <span className="inline-flex items-center gap-2"><Play className="h-4 w-4"/> Example</span>
+          </button>
+          <button className="px-3 py-2 rounded-xl border text-sm" onClick={clearChat}> 
+            <span className="inline-flex items-center gap-2"><RefreshCcw className="h-4 w-4"/> Clear</span>
+          </button>
+        </div>
+      </div>
+      <div className="mt-3 flex gap-2">
+        <textarea
+          ref={textareaRef}
+          className="flex-1 rounded-xl border px-3 py-2 text-sm resize-none overflow-hidden"
+          value={query}
+          onChange={handleInputChange}
+          onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && (e.preventDefault(), send(query))}
+          placeholder="Ask a question..."
+          rows={1}
+          style={{ minHeight: "40px", maxHeight: "200px" }}
+        />
+        <button className="px-3 py-2 rounded-xl bg-primary text-primary-foreground text-sm self-end" onClick={() => send(query)}>Run</button>
+      </div>
+      <div className="mt-3 flex-1 overflow-auto rounded-xl border p-2 space-y-2">
+        {messages.map((m) => (
+          <div
+            key={m.id}
+            className={`rounded-xl p-3 text-sm ${
+              m.role === "user" ? "bg-primary text-primary-foreground ml-6" : "bg-muted mr-6"
+            }`}
+          >
+            <div className="flex items-center justify-between gap-2">
+              <div className="text-xs opacity-80">{m.role === "user" ? "You" : "Agent"}</div>
+              {m.csv ? (
+                <button className="px-2 py-1 rounded-lg border text-xs bg-background text-foreground" onClick={() => downloadCSV("claims_daily.csv", m.csv!)}>
+                  <span className="inline-flex items-center gap-1"><Download className="h-3.5 w-3.5"/> CSV</span>
+                </button>
+              ) : null}
+            </div>
+            {m.node ? (
+              <div className="mt-2">{m.node}</div>
+            ) : (
+              <div className="mt-2 whitespace-pre-wrap leading-relaxed">{m.text}</div>
+            )}
+            {m.followUpQuestions && m.followUpQuestions.length > 0 && (
+              <div className="mt-3 pt-3 border-t border-border/50">
+                <div className="text-xs text-muted-foreground mb-2 font-medium">💡 {m.text === "How can I help you?" ? "Suggestions:" : "Suggested follow-ups:"}</div>
+                <div className="flex flex-wrap gap-2">
+                  {m.followUpQuestions.map((question, index) => (
+                    <button
+                      key={index}
+                      className="px-3 py-1.5 rounded-lg border text-xs bg-background hover:bg-muted hover:border-primary/50 transition-all duration-200 inline-flex items-center gap-1.5 group"
+                      onClick={() => send(question)}
+                    >
+                      <ChevronRight className="h-3 w-3 group-hover:translate-x-0.5 transition-transform" />
+                      {question}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        ))}
+        <div ref={bottomRef} />
+      </div>
+      {lastCsv ? (
+        <div className="mt-2 text-xs text-muted-foreground">
+          Latest CSV ready. <button className="underline" onClick={() => downloadCSV("claims_daily.csv", lastCsv)}>Download</button>
+        </div>
+      ) : null}
+    </div>
+  );
+});
+
 function InteractiveChart({data, dataKey, title, color = "#3b82f6"}: {data: any[], dataKey: string, title: string, color?: string}) {
   const [chartType, setChartType] = useState<'line' | 'bar'>('line');
 
@@ -203,11 +310,11 @@ function InteractiveChart({data, dataKey, title, color = "#3b82f6"}: {data: any[
       </div>
       <ResponsiveContainer width="100%" height={200}>
         {chartType === 'line' ? (
-          <LineChart data={chartData} margin={{ top: 5, right: 5, left: 5, bottom: 5 }}>
+          <LineChart data={chartData} margin={{ top: 10, right: 10, left: 10, bottom: 10 }}>
             <CartesianGrid strokeDasharray="3 3" opacity={0.3} />
             <XAxis
               dataKey="date"
-              tick={{ fontSize: 12 }}
+              tick={{ fontSize: 11 }}
               tickFormatter={(value) => {
                 if (value.includes('-')) {
                   const date = new Date(value);
@@ -231,11 +338,11 @@ function InteractiveChart({data, dataKey, title, color = "#3b82f6"}: {data: any[
             />
           </LineChart>
         ) : (
-          <BarChart data={chartData} margin={{ top: 5, right: 5, left: 5, bottom: 5 }}>
+          <BarChart data={chartData} margin={{ top: 10, right: 10, left: 10, bottom: 10 }}>
             <CartesianGrid strokeDasharray="3 3" opacity={0.3} />
             <XAxis
               dataKey="date"
-              tick={{ fontSize: 12 }}
+              tick={{ fontSize: 11 }}
               tickFormatter={(value) => {
                 if (value.includes('-')) {
                   const date = new Date(value);
@@ -294,18 +401,18 @@ function InteractiveBarChart({data, dataKey, title, color = "#3b82f6"}: {data: a
   };
 
   return (
-    <ResponsiveContainer width="100%" height={200}>
-      <BarChart data={chartData} margin={{ top: 5, right: 5, left: 5, bottom: 5 }}>
+    <ResponsiveContainer width="100%" height={220}>
+      <BarChart data={chartData} margin={{ top: 10, right: 10, left: 10, bottom: 50 }}>
         <CartesianGrid strokeDasharray="3 3" opacity={0.3} />
         <XAxis
           dataKey="name"
-          tick={{ fontSize: 12 }}
+          tick={{ fontSize: 10 }}
           angle={-45}
           textAnchor="end"
-          height={60}
+          height={70}
         />
         <YAxis
-          tick={{ fontSize: 12 }}
+          tick={{ fontSize: 10 }}
           tickFormatter={formatValue}
         />
         <Tooltip content={<CustomTooltip />} />
@@ -350,14 +457,14 @@ function InteractivePieChart({data, dataKey, nameKey, title, colors = ["#10b981"
   const dataWithTotal = chartData.map(item => ({ ...item, total }));
 
   return (
-    <ResponsiveContainer width="100%" height={200}>
+    <ResponsiveContainer width="100%" height={210}>
       <PieChart>
         <Pie
           data={dataWithTotal}
           cx="50%"
           cy="50%"
-          innerRadius={40}
-          outerRadius={80}
+          innerRadius={35}
+          outerRadius={65}
           paddingAngle={2}
           dataKey={dataKey}
         >
@@ -428,7 +535,7 @@ function SankeyDiagram({data}:{data:Claim[]}) {
   };
 
   return (
-    <ResponsiveContainer width="100%" height={300}>
+    <ResponsiveContainer width="100%" height={320}>
       <Sankey
           data={{ nodes, links }}
           margin={{ top: 10, right: 160, bottom: 10, left: 100 }}
@@ -502,20 +609,20 @@ function AdjustmentDensity({data}:{data:Claim[]}) {
   };
 
   return (
-    <ResponsiveContainer width="100%" height={250}>
-      <ScatterChart margin={{ top: 20, right: 20, bottom: 40, left: 40 }}>
+    <ResponsiveContainer width="100%" height={280}>
+      <ScatterChart margin={{ top: 15, right: 15, bottom: 35, left: 35 }}>
         <CartesianGrid strokeDasharray="3 3" opacity={0.3} />
         <XAxis 
           dataKey="avgPromptPay" 
           name="Avg Prompt Pay" 
-          tick={{ fontSize: 12 }}
+          tick={{ fontSize: 10 }}
           tickFormatter={usd}
           type="number"
         />
         <YAxis 
           dataKey="domain" 
           type="category" 
-          tick={{ fontSize: 12 }}
+          tick={{ fontSize: 10 }}
           label={{ value: 'Domain', angle: -90, position: 'insideLeft' }}
         />
         <Tooltip cursor={{ strokeDasharray: '3 3' }} content={<CustomTooltip />} />
@@ -563,16 +670,16 @@ function PromptPayDistribution({data}:{data:Claim[]}) {
 
   return (
     <ResponsiveContainer width="100%" height={200}>
-      <BarChart data={chartData} margin={{ top: 5, right: 5, left: 5, bottom: 40 }}>
+      <BarChart data={chartData} margin={{ top: 10, right: 10, left: 10, bottom: 50 }}>
         <CartesianGrid strokeDasharray="3 3" opacity={0.3} />
         <XAxis 
           dataKey="provider" 
-          tick={{ fontSize: 11 }}
+          tick={{ fontSize: 10 }}
           angle={-45}
           textAnchor="end"
           height={70}
         />
-        <YAxis tick={{ fontSize: 12 }} />
+        <YAxis tick={{ fontSize: 10 }} />
         <Tooltip />
         <Bar dataKey="On-Time" stackId="a" fill="#10b981" />
         <Bar dataKey="Delayed" stackId="a" fill="#f59e0b" />
@@ -587,19 +694,250 @@ function MiniSelect({label,value,onChange,options}:{label:string;value:string;on
 function Card({title,subtitle,children}:{title:string;subtitle:string;children:React.ReactNode}){ return (<div className="rounded-2xl border p-3"><div className="text-sm font-medium">{title}</div><div className="text-xs text-muted-foreground">{subtitle}</div><div className="mt-2">{children}</div></div>); }
 function RowBar({name,value,max,right}:{name:string;value:number;max:number;right:string}){ const w=Math.max(2,Math.round((value/Math.max(1,max))*100)); return (<div className="rounded-xl border p-2"><div className="flex items-center justify-between gap-2"><div className="text-xs font-medium truncate" title={name}>{name}</div><div className="text-xs text-muted-foreground tabular-nums">{right}</div></div><div className="mt-2 h-2 w-full rounded-full bg-muted"><div className="h-2 rounded-full bg-foreground/40" style={{width:`${w}%`}}/></div></div>); }
 
+// Follow-up chart components
+function FirstTimeClaimsByProvider({data}:{data:Claim[]}) {
+  const chartData = useMemo(() => {
+    const providerCounts = new Map<string, number>();
+    
+    for (const claim of data.filter(c => c.seqno === 999)) {
+      const count = providerCounts.get(claim.provider) || 0;
+      providerCounts.set(claim.provider, count + 1);
+    }
+    
+    return Array.from(providerCounts.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 6)
+      .map(([provider, count]) => ({
+        provider,
+        claims: count
+      }));
+  }, [data]);
+
+  return (
+    <ResponsiveContainer width="100%" height={200}>
+      <BarChart data={chartData} margin={{ top: 10, right: 10, left: 10, bottom: 50 }}>
+        <CartesianGrid strokeDasharray="3 3" opacity={0.3} />
+        <XAxis 
+          dataKey="provider" 
+          tick={{ fontSize: 10 }}
+          angle={-45}
+          textAnchor="end"
+          height={70}
+        />
+        <YAxis tick={{ fontSize: 10 }} />
+        <Tooltip />
+        <Bar dataKey="claims" fill="#3b82f6" />
+      </BarChart>
+    </ResponsiveContainer>
+  );
+}
+
+function ServiceLinePaymentRatio({data}:{data:Claim[]}) {
+  const chartData = useMemo(() => {
+    const serviceMap = new Map<string, {billed: number, paid: number}>();
+    
+    for (const claim of data) {
+      const service = claim.serviceLine || "Unknown";
+      const existing = serviceMap.get(service) || { billed: 0, paid: 0 };
+      existing.billed += claim.billed;
+      existing.paid += claim.paidProxy;
+      serviceMap.set(service, existing);
+    }
+    
+    return Array.from(serviceMap.entries())
+      .map(([service, stats]) => ({
+        service,
+        ratio: stats.billed > 0 ? (stats.paid / stats.billed) * 100 : 0,
+        billed: stats.billed
+      }))
+      .sort((a, b) => b.billed - a.billed)
+      .slice(0, 6);
+  }, [data]);
+
+  return (
+    <ResponsiveContainer width="100%" height={200}>
+      <BarChart data={chartData} margin={{ top: 10, right: 10, left: 10, bottom: 50 }}>
+        <CartesianGrid strokeDasharray="3 3" opacity={0.3} />
+        <XAxis 
+          dataKey="service" 
+          tick={{ fontSize: 10 }}
+          angle={-45}
+          textAnchor="end"
+          height={70}
+        />
+        <YAxis tick={{ fontSize: 10 }} domain={[0, 100]} />
+        <Tooltip formatter={(value) => [`${value}%`, 'Payment Ratio']} />
+        <Bar dataKey="ratio" fill="#10b981" />
+      </BarChart>
+    </ResponsiveContainer>
+  );
+}
+
+function OncologyDenialBreakdown({data}:{data:Claim[]}) {
+  const chartData = useMemo(() => {
+    const reasonCounts = new Map<string, number>();
+    
+    for (const claim of data.filter(c => c.serviceLine === "Oncology" && c.denied)) {
+      const reason = claim.reason || "Unknown";
+      const count = reasonCounts.get(reason) || 0;
+      reasonCounts.set(reason, count + 1);
+    }
+    
+    return Array.from(reasonCounts.entries())
+      .sort((a, b) => b[1] - a[1])
+      .map(([reason, count]) => ({
+        reason: reason.length > 20 ? reason.substring(0, 20) + "..." : reason,
+        count
+      }));
+  }, [data]);
+
+  return (
+    <ResponsiveContainer width="100%" height={200}>
+      <PieChart>
+        <Pie
+          data={chartData}
+          cx="50%"
+          cy="50%"
+          outerRadius={60}
+          dataKey="count"
+          label={({ reason, count }) => `${reason}: ${count}`}
+        >
+          {chartData.map((entry, index) => (
+            <Cell key={`cell-${index}`} fill={["#ef4444", "#f59e0b", "#10b981", "#8b5cf6", "#06b6d4"][index % 5]} />
+          ))}
+        </Pie>
+        <Tooltip />
+      </PieChart>
+    </ResponsiveContainer>
+  );
+}
+
+function ProviderPaymentTimeChart({data}:{data:Claim[]}) {
+  const chartData = useMemo(() => {
+    const providerStats = new Map<string, {totalDays: number, count: number}>();
+    
+    for (const claim of data.filter(c => !c.denied && c.cycleDays != null)) {
+      const existing = providerStats.get(claim.provider) || { totalDays: 0, count: 0 };
+      existing.totalDays += claim.cycleDays!;
+      existing.count += 1;
+      providerStats.set(claim.provider, existing);
+    }
+    
+    return Array.from(providerStats.entries())
+      .map(([provider, stats]) => ({
+        provider,
+        avgDays: Math.round(stats.totalDays / stats.count)
+      }))
+      .sort((a, b) => a.avgDays - b.avgDays)
+      .slice(0, 6);
+  }, [data]);
+
+  return (
+    <ResponsiveContainer width="100%" height={200}>
+      <BarChart data={chartData} margin={{ top: 5, right: 5, left: 5, bottom: 40 }}>
+        <CartesianGrid strokeDasharray="3 3" opacity={0.3} />
+        <XAxis 
+          dataKey="provider" 
+          tick={{ fontSize: 11 }}
+          angle={-45}
+          textAnchor="end"
+          height={70}
+        />
+        <YAxis tick={{ fontSize: 12 }} label={{ value: 'Days', angle: -90, position: 'insideLeft' }} />
+        <Tooltip formatter={(value) => [`${value} days`, 'Avg Payment Time']} />
+        <Bar dataKey="avgDays" fill="#f59e0b" />
+      </BarChart>
+    </ResponsiveContainer>
+  );
+}
+
+function ClaimsTrendChart({data}:{data: {month: string, claims: number, denied: number}[]}) {
+  return (
+    <ResponsiveContainer width="100%" height={200}>
+      <LineChart data={data} margin={{ top: 5, right: 5, left: 5, bottom: 5 }}>
+        <CartesianGrid strokeDasharray="3 3" opacity={0.3} />
+        <XAxis dataKey="month" tick={{ fontSize: 11 }} />
+        <YAxis tick={{ fontSize: 12 }} />
+        <Tooltip />
+        <Line type="monotone" dataKey="claims" stroke="#3b82f6" strokeWidth={2} name="Total Claims" />
+        <Line type="monotone" dataKey="denied" stroke="#ef4444" strokeWidth={2} name="Denied Claims" />
+      </LineChart>
+    </ResponsiveContainer>
+  );
+}
+
+function DelayedPaymentsChart({data}:{data:Claim[]}) {
+  const chartData = useMemo(() => {
+    const providerStats = new Map<string, {delayed: number, total: number}>();
+    
+    for (const claim of data.filter(c => !c.denied && c.cycleDays != null)) {
+      const existing = providerStats.get(claim.provider) || { delayed: 0, total: 0 };
+      existing.total += 1;
+      if (claim.cycleDays! > 21) {
+        existing.delayed += 1;
+      }
+      providerStats.set(claim.provider, existing);
+    }
+    
+    return Array.from(providerStats.entries())
+      .filter(([, stats]) => stats.total > 0)
+      .map(([provider, stats]) => ({
+        provider,
+        delayRate: (stats.delayed / stats.total) * 100
+      }))
+      .sort((a, b) => b.delayRate - a.delayRate)
+      .slice(0, 6);
+  }, [data]);
+
+  return (
+    <ResponsiveContainer width="100%" height={200}>
+      <BarChart data={chartData} margin={{ top: 5, right: 5, left: 5, bottom: 40 }}>
+        <CartesianGrid strokeDasharray="3 3" opacity={0.3} />
+        <XAxis 
+          dataKey="provider" 
+          tick={{ fontSize: 11 }}
+          angle={-45}
+          textAnchor="end"
+          height={70}
+        />
+        <YAxis tick={{ fontSize: 12 }} label={{ value: 'Delay Rate %', angle: -90, position: 'insideLeft' }} />
+        <Tooltip formatter={(value) => [`${value}%`, 'Delay Rate']} />
+        <Bar dataKey="delayRate" fill="#ef4444" />
+      </BarChart>
+    </ResponsiveContainer>
+  );
+}
+
+function OverturnReasonsChart({data}:{data: {reason: string, count: number}[]}) {
+  return (
+    <ResponsiveContainer width="100%" height={200}>
+      <PieChart>
+        <Pie
+          data={data}
+          cx="50%"
+          cy="50%"
+          outerRadius={60}
+          dataKey="count"
+          label={({ reason, count }) => `${reason}: ${count}`}
+        >
+          {data.map((entry, index) => (
+            <Cell key={`cell-${index}`} fill={["#10b981", "#3b82f6", "#f59e0b", "#8b5cf6"][index % 4]} />
+          ))}
+        </Pie>
+        <Tooltip />
+      </PieChart>
+    </ResponsiveContainer>
+  );
+}
+
 export default function App(){
   const [claims,setClaims]=useState<Claim[]>([]);
   const [dataStatus,setDataStatus]=useState("No workbook loaded (using demo rows). Put claims.xlsx in /public to auto-load.");
   const [days,setDays]=useState(30);
   const [threshold,setThreshold]=useState(100000);
   const [region,setRegion]=useState("All");
-  const [query,setQuery]=useState("");
-  const [running,setRunning]=useState(false);
   const [trace,setTrace]=useState<TraceItem[]>([]);
-  const [messages,setMessages]=useState<Msg[]>([{id:uid(),role:"assistant",text:"Metrics aligned to Excel columns: billed/allowed/LPP, denials from PAY_ACT_CD, UM match from DDC_NAT_E00_CAS_NBR, cycle time from entry→completed dates. Ask: ‘Top providers over $200k last 90 days’, ‘UM mismatch trends’, ‘Top REASON domains’, ‘Export csv’."}]);
-  const bottomRef=useRef<HTMLDivElement|null>(null);
-
-  useEffect(()=>{ bottomRef.current?.scrollIntoView({behavior:"smooth"}); },[messages,running]);
+  const [messages,setMessages]=useState<Msg[]>([{id:uid(),role:"assistant",text:"How can I help you?",followUpQuestions:["How many first-time claims?","Show me the total dollars billed vs. paid.","Show me the claims denial distribution by reason."]}]);
 
   useEffect(()=>{ (async()=>{ try{ setDataStatus("Checking /claims.xlsx …"); const c=await readXlsxFromUrl("/claims.xlsx"); if(c.length){ setClaims(c); setDataStatus(`Auto-loaded ${nfmt(c.length)} rows from /claims.xlsx.`); } else { setDataStatus("/claims.xlsx loaded but no rows mapped (using demo rows). Check column names."); } } catch { setDataStatus("No workbook loaded (using demo rows). Put claims.xlsx in /public to auto-load."); } })(); },[]);
 
@@ -619,98 +957,313 @@ export default function App(){
   async function loadWorkbookUrl(){ setDataStatus("Loading /claims.xlsx …"); try{ const c=await readXlsxFromUrl("/claims.xlsx"); setClaims(c); setDataStatus(`Loaded ${nfmt(c.length)} rows from /claims.xlsx.`);} catch(e:any){ setDataStatus(`Failed to load /claims.xlsx: ${e?.message||String(e)}`);} }
 
   // Pre-defined Q&A pairs for demo questions
-  const qaPairs: { q: string; a: (data: Claim[]) => string }[] = [
+  const qaPairs: { q: string; a: (data: Claim[]) => string | {text:string;node:React.ReactNode;followUpQuestions?:string[]} }[] = [
     {
-      q: "how many first time claims",
+      q: "How many first-time claims?",
       a: (data) => {
         const firstTime = data.filter(c => c.seqno === 999).length;
-        // Executive takeaways (mocked)
-        return `A quick scan reveals ${nfmt(firstTime)} first time claims in the current scope.\n\nStatus update:\n• Change detected: Claim volume up 8% (32 vs 29 last month).\n• Primary catalysts: Provider 03 onboarding (60%), new product launch (25%), direct-to-consumer campaign (15%).\n• Suggested protocol: Claims Ops to audit onboarding for Provider 03 and report findings by Mar 15. Would you like a reminder scheduled?`;
+        return {
+          text: `Volume Analysis: ${nfmt(firstTime)} first-time claims in the current scope.\n\nStatus Update:\n• Change detected: Claim volume up 8% (32 vs 29 last month).\n• Primary catalysts: Provider 03 onboarding (60%), new product launch (25%), direct-to-consumer campaign (15%).\n• Recommended action: Claims Ops should audit onboarding for Provider 03 and report findings by Mar 15. Would you like a reminder scheduled?`,
+          followUpQuestions: [
+            "Would you like to see the breakdown by provider?",
+            "Should I analyze the trend over the last 6 months?",
+            "Do you want to investigate the new product launch impact?"
+          ]
+        };
       }
     },
     {
-      q: "total dollar billed vs paid",
+      q: "Show me the total dollars billed vs. paid.",
       a: (data) => {
         const billed = data.reduce((sum, c) => sum + c.billed, 0);
         const paid = data.reduce((sum, c) => sum + c.paidProxy, 0);
-        return `Financial dashboard: Billed ${usd(billed)}, Paid ${usd(paid)}, with a paid-to-billed ratio of ${pct(billed ? paid / billed : 0)}.\n\nDiagnostics:\n• Recent shift: Paid ratio slipped to 48% (was 50% last week).\n• Root causes: Oncology denials (70%), Provider 02 disputes (20%), duplicate billing (10%).\n• Tactical response: Finance to review Oncology denials and resolve Provider 02 disputes by Mar 12. Would you like a summary emailed to the team?`;
+        return {
+          text: `Financial Dashboard: Billed ${usd(billed)}, Paid ${usd(paid)}, Paid-to-Billed Ratio ${pct(billed ? paid / billed : 0)}.\n\nDiagnostic Analysis:\n• Recent trend: Paid ratio decreased to 48% (previously 50% last week).\n• Root causes: Oncology denials (70%), Provider 02 disputes (20%), duplicate billing (10%).\n• Recommended action: Finance should review Oncology denials and resolve Provider 02 disputes by Mar 12. Would you like a summary emailed to the team?`,
+          followUpQuestions: [
+            "Would you like to see the breakdown by service line?",
+            "Should I investigate the Oncology denial details?",
+            "Do you want to compare this with last month's performance?"
+          ]
+        };
       }
     },
     {
-      q: "claims denial distribution by reasons",
+      q: "Show me the claims denial distribution by reason.",
       a: (data) => {
         const deniedByReason = groupBy(data.filter(c => c.denied), c => c.reason || "(blank)");
-        let out = "Claims Denial Distribution by Reason:\n";
+        let out = "Denial Distribution by Reason:\n";
         for (const [reason, claims] of deniedByReason.entries()) {
           out += `- ${reason}: ${nfmt(claims.length)}\n`;
         }
-        return `Denial distribution analysis complete.\n${out.trim()}\n\nKey findings:\n• Oncology denials up 5 cases (18 vs 13 last month).\n• Main offenders: Missing clinical notes (3), incorrect codes (1), absent prior auth (1).\n• Recommended action: Medical Review to contact Oncology providers and verify documentation by Mar 20. Would you like a briefing prepared for the next board meeting?`;
+        return {
+          text: `Denial Analysis Complete.\n${out.trim()}\n\nKey Findings:\n• Oncology denials increased by 5 cases (18 vs 13 last month).\n• Primary issues: Missing clinical notes (3), incorrect codes (1), absent prior authorization (1).\n• Recommended action: Medical Review should contact Oncology providers to verify documentation by Mar 20. Would you like a briefing prepared for the next board meeting?`,
+          followUpQuestions: [
+            "Would you like to drill down into Oncology denial details?",
+            "Should I show denials by provider instead?",
+            "Do you want to see the trend over time for specific denial reasons?"
+          ]
+        };
       }
     },
     {
-      q: "number of correspondence/inquiries & disputes received",
+      q: "How many disputes and inquiries have we received?",
       a: () => {
-        return `Correspondence and disputes tally: 42, exceeding the expected threshold.\n\nSituation report:\n• Change: Disputes up 10% (42 vs 38 target).\n• Drivers: Provider 01 (50%), delayed payments (30%), portal errors (20%).\n• Next steps: Provider Relations to meet Provider 01 and resolve payment issues by Mar 18. IT to investigate portal reliability. Would you like an apology letter drafted?`;
+        return {
+          text: `Correspondence Analysis: 42 total disputes and inquiries received, exceeding the expected threshold.\n\nSituation Report:\n• Change detected: Disputes up 10% (42 vs 38 target).\n• Primary drivers: Provider 01 (50%), delayed payments (30%), portal errors (20%).\n• Recommended action: Provider Relations should meet with Provider 01 and resolve payment issues by Mar 18. IT should investigate portal reliability. Would you like an action plan drafted?`,
+          followUpQuestions: [
+            "Would you like to see the breakdown by dispute type?",
+            "Should I investigate Provider 01's specific issues?",
+            "Do you want to track the resolution timeline for these disputes?"
+          ]
+        };
       }
     },
     {
-      q: "number of disputed overturned vs upheld",
+      q: "How many disputes were overturned versus upheld?",
       a: () => {
-        return `Appeals review: 18 overturned, 24 upheld.\n\nPerformance update:\n• Overturned rate up 15% (18/42 vs 15/40 last week).\n• Success factors: Appeals checklist (2 cases), expedited review (1), improved documentation (remainder).\n• Directive: Appeals Team to track checklist compliance and submit a process improvement report by Mar 22. Would you like a follow-up scheduled?`;
+        return {
+          text: `Appeals Summary: 18 disputes overturned, 24 disputes upheld.\n\nPerformance Update:\n• Improvement: Overturned rate increased 15% (18/42 vs 15/40 last week).\n• Success factors: Appeals checklist (2 cases), expedited review (1), improved documentation (remainder).\n• Recommended action: Appeals Team should track checklist compliance and submit process improvement report by Mar 22. Would you like a follow-up scheduled?`,
+          followUpQuestions: [
+            "Would you like to see the reasons for overturned disputes?",
+            "Should I analyze the appeals process efficiency?",
+            "Do you want to compare success rates by dispute category?"
+          ]
+        };
       }
     },
     {
-      q: "what kind of recovery was performed",
+      q: "What types of recovery operations were performed?",
       a: () => {
-        return `Recovery operations summary: Overpayment recoupment, Coordination of Benefits, Subrogation.\n\nHighlights:\n• Subrogation recoveries doubled ($40K vs $20K last month).\n• Catalysts: New audit tool ($15K), staff training ($3K), external vendor ($2K).\n• Mission: Recovery Team to expand audit scope and set vendor targets by Mar 25. Would you like the team notified?`;
+        return {
+          text: `Recovery Operations Summary: Overpayment recoupment, Coordination of Benefits, and Subrogation.\n\nHighlights:\n• Achievement: Subrogation recoveries doubled ($40K vs $20K last month).\n• Contributing factors: New audit tool ($15K), staff training ($3K), external vendor ($2K).\n• Recommended next steps: Recovery Team should expand audit scope and set vendor targets by Mar 25. Would you like the team notified?`,
+          followUpQuestions: [
+            "Would you like to see the dollar amounts recovered by type?",
+            "Should I analyze the ROI of the new audit tool?",
+            "Do you want to identify additional recovery opportunities?"
+          ]
+        };
       }
     },
     {
-      q: "prompt pay distribution by provider",
+      q: "Show me the prompt pay distribution by provider",
       a: (data) => {
         const byProvider = groupBy(data.filter(c => !c.denied), c => c.provider);
         let out = "Prompt Pay Distribution by Provider:\n";
         for (const [provider, claims] of byProvider.entries()) {
           out += `- ${provider}: ${nfmt(claims.length)} paid\n`;
         }
-        return `Prompt pay distribution:\n${out.trim()}\n\nAnalysis:\n• Provider 01 prompt pay rate fell to 80% (from 85% last month).\n• Culprits: 3 late submissions, 2 system outages, 1 staff turnover.\n• Recommendation: IT to automate reminders and monitor outages, status update by Mar 28. Would you like contingency protocols activated?`;
+        return {
+          text: `Prompt Pay Summary:\n${out.trim()}\n\nSee the chart below for detailed breakdown of the top 6 providers.`,
+          node: <PromptPayDistribution data={data} />,
+          followUpQuestions: [
+            "Would you like to see the average payment time by provider?",
+            "Should I identify providers with delayed payments?",
+            "Do you want to analyze prompt pay trends over time?"
+          ]
+        };
       }
     }
   ];
 
-  function findAnswer(q: string, data: Claim[]): string | null {
+  // Follow-up Q&A pairs for deeper investigation
+  const followupPairs: { q: string; a: (data: Claim[]) => string | {text:string;node:React.ReactNode} }[] = [
+    {
+      q: "Would you like to see the breakdown by provider?",
+      a: (data) => {
+        const firstTimeByProvider = groupBy(data.filter(c => c.seqno === 999), c => c.provider);
+        let out = "First-Time Claims by Provider:\n";
+        for (const [provider, claims] of firstTimeByProvider.entries()) {
+          out += `- ${provider}: ${nfmt(claims.length)} claims\n`;
+        }
+        return {
+          text: `Provider Breakdown Analysis:\n${out.trim()}\n\nKey Insights:\n• Provider 03: 12 first-time claims (37.5% of total) - highest volume\n• Provider 01: 8 first-time claims (25% of total)\n• Provider 02: 6 first-time claims (18.8% of total)\n\nSee the chart below for visual breakdown.`,
+          node: <FirstTimeClaimsByProvider data={data} />
+        };
+      }
+    },
+    {
+      q: "Would you like to see the breakdown by service line?",
+      a: (data) => {
+        const billedByService = groupBy(data, c => c.serviceLine || "Unknown");
+        let out = "Financial Breakdown by Service Line:\n";
+        for (const [service, claims] of billedByService.entries()) {
+          const billed = claims.reduce((sum, c) => sum + c.billed, 0);
+          const paid = claims.reduce((sum, c) => sum + c.paidProxy, 0);
+          out += `- ${service}: Billed ${usd(billed)}, Paid ${usd(paid)} (${pct(billed ? paid/billed : 0)})\n`;
+        }
+        return {
+          text: `Service Line Financial Analysis:\n${out.trim()}\n\nCritical Findings:\n• Oncology: $2.1M billed, $1.8M paid (85.7% ratio) - below target\n• Cardiology: $1.9M billed, $1.7M paid (89.5% ratio)\n• Emergency: $1.4M billed, $1.3M paid (92.9% ratio) - highest ratio\n\nSee the chart below for payment ratios by service line.`,
+          node: <ServiceLinePaymentRatio data={data} />
+        };
+      }
+    },
+    {
+      q: "Would you like to drill down into Oncology denial details?",
+      a: (data) => {
+        const oncologyClaims = data.filter(c => c.serviceLine === "Oncology" && c.denied);
+        const denialReasons = groupBy(oncologyClaims, c => c.reason || "Unknown");
+        let out = "Oncology Denial Details:\n";
+        for (const [reason, claims] of denialReasons.entries()) {
+          const totalBilled = claims.reduce((sum, c) => sum + c.billed, 0);
+          out += `- ${reason}: ${nfmt(claims.length)} claims, ${usd(totalBilled)} billed\n`;
+        }
+        return {
+          text: `Oncology Denial Deep Dive:\n${out.trim()}\n\nRoot Cause Analysis:\n• Missing clinical notes: 8 cases ($180K impact) - documentation gaps\n• Incorrect coding: 5 cases ($95K impact) - training opportunity\n• Prior authorization issues: 3 cases ($75K impact) - process bottleneck\n\nRecommended Actions:\n• Schedule oncology provider documentation training by Mar 15\n• Review prior authorization workflow for efficiency gains\n• Implement automated coding validation checks`,
+          node: <OncologyDenialBreakdown data={data} />
+        };
+      }
+    },
+    {
+      q: "Would you like to see the average payment time by provider?",
+      a: (data) => {
+        const providerPaymentTimes = new Map<string, {totalDays: number, count: number}>();
+        
+        for (const claim of data.filter(c => !c.denied && c.cycleDays != null)) {
+          const existing = providerPaymentTimes.get(claim.provider) || { totalDays: 0, count: 0 };
+          existing.totalDays += claim.cycleDays!;
+          existing.count += 1;
+          providerPaymentTimes.set(claim.provider, existing);
+        }
+        
+        let out = "Average Payment Time by Provider:\n";
+        for (const [provider, stats] of providerPaymentTimes.entries()) {
+          const avgDays = Math.round(stats.totalDays / stats.count);
+          out += `- ${provider}: ${avgDays} days average\n`;
+        }
+        
+        return {
+          text: `Payment Cycle Analysis:\n${out.trim()}\n\nPerformance Summary:\n• Provider 01: 18 days (within target of 21 days)\n• Provider 02: 25 days (exceeds target by 4 days)\n• Provider 03: 22 days (slightly over target)\n\nKey Issues:\n• Provider 02 showing consistent delays - investigate processing bottlenecks\n• Overall average: 21.5 days vs target of 21 days\n\nSee the chart below for detailed payment time distribution.`,
+          node: <ProviderPaymentTimeChart data={data} />
+        };
+      }
+    },
+    {
+      q: "Should I analyze the trend over the last 6 months?",
+      a: (data) => {
+        // Mock 6-month trend data
+        const trendData = [
+          { month: "Sep 2025", claims: 28, denied: 12 },
+          { month: "Oct 2025", claims: 31, denied: 14 },
+          { month: "Nov 2025", claims: 29, denied: 11 },
+          { month: "Dec 2025", claims: 35, denied: 16 },
+          { month: "Jan 2026", claims: 33, denied: 15 },
+          { month: "Feb 2026", claims: 32, denied: 13 }
+        ];
+        
+        return {
+          text: `6-Month Trend Analysis:\n\nMonthly Volume & Denial Rates:\n• September: 28 claims, 43% denial rate\n• October: 31 claims, 45% denial rate\n• November: 29 claims, 38% denial rate\n• December: 35 claims, 46% denial rate\n• January: 33 claims, 45% denial rate\n• February: 32 claims, 41% denial rate\n\nTrend Insights:\n• Volume increased 14% from Sep to Feb (28 → 32 claims)\n• Denial rate fluctuated between 38-46%, currently at 41%\n• Peak volume in December (35 claims) - holiday season impact\n• Lowest denial rate in November (38%) - process improvement effect\n\nSee the trend chart below for visual analysis.`,
+          node: <ClaimsTrendChart data={trendData} />
+        };
+      }
+    },
+    {
+      q: "Should I identify providers with delayed payments?",
+      a: (data) => {
+        const delayedProviders = new Map<string, {delayed: number, total: number, avgDelay: number}>();
+        
+        for (const claim of data.filter(c => !c.denied && c.cycleDays != null)) {
+          const existing = delayedProviders.get(claim.provider) || { delayed: 0, total: 0, avgDelay: 0 };
+          existing.total += 1;
+          if (claim.cycleDays! > 21) { // Assuming 21 days is the target
+            existing.delayed += 1;
+            existing.avgDelay += claim.cycleDays!;
+          }
+          delayedProviders.set(claim.provider, existing);
+        }
+        
+        let out = "Providers with Delayed Payments (>21 days):\n";
+        const delayedList = Array.from(delayedProviders.entries())
+          .filter(([, stats]) => stats.delayed > 0)
+          .sort((a, b) => b[1].delayed - a[1].delayed);
+          
+        for (const [provider, stats] of delayedList) {
+          const avgDelay = stats.avgDelay > 0 ? Math.round(stats.avgDelay / stats.delayed) : 0;
+          out += `- ${provider}: ${stats.delayed}/${stats.total} delayed (${pct(stats.delayed/stats.total)}), avg ${avgDelay} days\n`;
+        }
+        
+        return {
+          text: `Delayed Payment Analysis:\n${out.trim()}\n\nCritical Issues Identified:\n• Provider 02: 8/12 claims delayed (67%) - highest delay rate\n• Provider 03: 5/15 claims delayed (33%)\n• Provider 01: 2/18 claims delayed (11%) - best performance\n\nRecommended Actions:\n• Contact Provider 02 immediately to resolve processing issues\n• Review Provider 03's submission quality\n• Share Provider 01's best practices with other providers\n\nSee the chart below for delay rates by provider.`,
+          node: <DelayedPaymentsChart data={data} />
+        };
+      }
+    },
+    {
+      q: "Would you like to see the reasons for overturned disputes?",
+      a: () => {
+        const overturnReasons = [
+          { reason: "Documentation provided", count: 8 },
+          { reason: "Medical necessity clarified", count: 5 },
+          { reason: "Coding error corrected", count: 3 },
+          { reason: "Timely filing confirmed", count: 2 }
+        ];
+        
+        let out = "Reasons for Overturned Disputes:\n";
+        for (const item of overturnReasons) {
+          out += `- ${item.reason}: ${item.count} cases\n`;
+        }
+        
+        return {
+          text: `Dispute Overturn Analysis:\n${out.trim()}\n\nSuccess Patterns:\n• Documentation issues resolved 44% of overturns (8/18)\n• Medical necessity clarifications: 28% (5/18)\n• Coding corrections: 17% (3/18)\n• Timely filing confirmations: 11% (2/18)\n\nKey Insights:\n• Most overturns involve additional documentation submission\n• Medical necessity appeals have high success rate\n• Coding errors are correctable with proper review\n\nRecommended Actions:\n• Enhance provider communication for documentation requirements\n• Train appeals team on medical necessity criteria\n• Implement automated coding validation before submission`,
+          node: <OverturnReasonsChart data={overturnReasons} />
+        };
+      }
+    }
+  ];
+
+  function findAnswer(q: string, data: Claim[]): string | {text:string;node:React.ReactNode;followUpQuestions?:string[]} | null {
     const norm = q.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+    
+    // Check main qaPairs first
     for (const { q: question, a } of qaPairs) {
-      if (norm.includes(question)) {
+      const qnorm = (question || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+      if (!qnorm) continue;
+      if (norm.includes(qnorm)) {
         return a(data);
       }
     }
+    
+    // Check follow-up pairs
+    for (const { q: question, a } of followupPairs) {
+      const qnorm = (question || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+      if (!qnorm) continue;
+      if (norm.includes(qnorm)) {
+        return a(data);
+      }
+    }
+    
     return null;
   }
 
-  function send() {
-    const text = query.trim();
-    if (!text || running) return;
-    setMessages(m => [...m, { id: uid(), role: "user", text }]);
-    setQuery("");
+  const send = useCallback((text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    setMessages(m => [...m, { id: uid(), role: "user", text: trimmed }]);
     // Check for pre-defined Q&A
-    const answer = findAnswer(text, scoped);
+    const answer = findAnswer(trimmed, scoped);
     if (answer) {
-      setMessages(m => [...m, { id: uid(), role: "assistant", text: answer }]);
+      if (typeof answer === "string") {
+        setMessages(m => [...m, { id: uid(), role: "assistant", text: answer }]);
+      } else {
+        setMessages(m => [...m, { id: uid(), role: "assistant", text: answer.text, node: answer.node, followUpQuestions: answer.followUpQuestions }]);
+      }
     } else {
       setMessages(m => [...m, { id: uid(), role: "assistant", text: "Agent runner is enabled in the full version. This fallback build focuses on the dashboard + CSV download from UI buttons." }]);
     }
-  }
+  }, [scoped]);
+
+  const clearChat = useCallback(() => {
+    setMessages([{id:uid(),role:"assistant",text:"How can I help you?",followUpQuestions:["How many first-time claims?","Show me the total dollars billed vs. paid.","Show me the claims denial distribution by reason."]}]);
+  }, []);
 
   return (
-    <div className="min-h-screen bg-background text-foreground">
-      <div className="mx-auto max-w-6xl px-4 py-6">
+    <div className="bg-background text-foreground w-full overflow-x-hidden">
+      <div className="w-full px-2 sm:px-4 lg:px-6 py-2 sm:py-4">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
           <div className="flex items-center gap-2">
             <div className="h-10 w-10 rounded-2xl border flex items-center justify-center"><ShieldAlert className="h-5 w-5"/></div>
             <div>
               <div className="text-2xl font-semibold tracking-tight">Agentic Claims Analytics</div>
-              <div className="text-sm text-muted-foreground">Excel-backed prototype • high-charge claims</div>
+              <div className="text-sm text-muted-foreground">prototype</div>
             </div>
           </div>
           <button className="px-3 py-2 rounded-xl border text-sm" onClick={()=>{ setDays(30); setThreshold(100000); setRegion("All"); setTrace([]); setMessages(m=>[m[0]]); }}>
@@ -734,62 +1287,37 @@ export default function App(){
           </div>
         </div>
 
-        <div className="mt-5 flex gap-5">
-          <div className="flex-1 rounded-2xl border p-4">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <div className="text-lg font-semibold">Agent</div>
-                <div className="text-sm text-muted-foreground">Lightweight Q&A shell (dashboard-first build)</div>
-              </div>
-              <button className="px-3 py-2 rounded-xl border text-sm" onClick={()=>setQuery("Top providers over $200k last 90 days; export csv")}>
-                <span className="inline-flex items-center gap-2"><Play className="h-4 w-4"/> Example</span>
-              </button>
-            </div>
-            <div className="mt-3 flex gap-2">
-              <input className="flex-1 rounded-xl border px-3 py-2 text-sm" value={query} onChange={(e)=>setQuery(e.target.value)} onKeyDown={(e)=>e.key==="Enter" && send()} />
-              <button className="px-3 py-2 rounded-xl bg-primary text-primary-foreground text-sm" onClick={send}>Run</button>
-            </div>
-            <div className="mt-3 h-[220px] overflow-auto rounded-xl border p-2 space-y-2">
-              {messages.map(m=>(
-                <div key={m.id} className={`rounded-xl p-3 text-sm ${m.role==="user" ? "bg-primary text-primary-foreground ml-6" : "bg-muted mr-6"}`}>
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="text-xs opacity-80">{m.role==="user" ? "You" : "Agent"}</div>
-                    {m.csv ? (
-                      <button className="px-2 py-1 rounded-lg border text-xs bg-background text-foreground" onClick={()=>downloadCSV("claims_daily.csv", m.csv!)}>
-                        <span className="inline-flex items-center gap-1"><Download className="h-3.5 w-3.5"/> CSV</span>
-                      </button>
-                    ):null}
-                  </div>
-                  <div className="mt-2 whitespace-pre-wrap leading-relaxed">{m.text}</div>
-                </div>
-              ))}
-              <div ref={bottomRef}/>
-            </div>
-            {lastCsv ? (
-              <div className="mt-2 text-xs text-muted-foreground">Latest CSV ready. <button className="underline" onClick={()=>downloadCSV("claims_daily.csv", lastCsv)}>Download</button></div>
-            ) : null}
+        <div className="mt-5 flex flex-col lg:flex-row gap-2 sm:gap-3 min-h-[50vh] sm:min-h-[55vh] max-h-[75vh]">
+          <div className="flex-1 flex flex-col rounded-2xl border p-4 min-h-0">
+            <ChatPanel
+              messages={messages}
+              send={send}
+              downloadCSV={downloadCSV}
+              lastCsv={lastCsv}
+              clearChat={clearChat}
+            />
           </div>
 
-          <div className="flex-1 rounded-2xl border p-4">
+          <div className="flex-1 rounded-2xl border p-4 overflow-auto min-h-0">
             <div className="flex flex-wrap gap-2">
               <MiniSelect label="Days" value={String(days)} onChange={(v)=>setDays(Number(v))} options={["7","30","60","90"]}/>
               <MiniSelect label="Region" value={region} onChange={setRegion} options={regionOptions}/>
               <MiniSelect label="Threshold" value={String(threshold)} onChange={(v)=>setThreshold(Number(v))} options={["75000","100000","150000","200000","300000"]}/>
             </div>
 
-            <div className="mt-4 grid gap-3 sm:grid-cols-2">
+            <div className="mt-3 grid gap-2 sm:grid-cols-2">
               <Kpi label={`Billed ≥ ${usd(threshold)}`} value={pct(kpis.highShare)} sub="Share of billed" />
               <Kpi label="Paid / Billed" value={pct(kpis.paidToBilled)} sub={`Billed ${usd(kpis.billed)}`} />
               <Kpi label="Billed" value={usd(kpis.billed)} sub={`Claims in scope • ${nfmt(kpis.claims)}`} />
               <Kpi label="Denial rate" value={pct(kpis.deniedRate)} sub="PAY_ACT_CD starts with R" />
             </div>
 
-            <div className="mt-4 grid gap-3 sm:grid-cols-2">
+            <div className="mt-3 grid gap-2 sm:grid-cols-2">
               <Card title="Daily allowed" subtitle="sum of allowed"><InteractiveChart data={series} dataKey="allowed" title="Allowed Amount" color="#10b981"/></Card>
               <Card title="Daily UM mismatches" subtitle="NO/MULTI/USERNOMATCH cases"><InteractiveChart data={series} dataKey="umMismatch" title="UM Mismatches" color="#f59e0b"/></Card>
             </div>
 
-            <div className="mt-4 grid gap-3 sm:grid-cols-2">
+            <div className="mt-3 grid gap-2 sm:grid-cols-2">
               <Card title="Provider Concentration" subtitle="Prompt pay distribution"><PromptPayDistribution data={scoped}/></Card>
               <Card title="UM case concentration" subtitle="share of allowed"><ConcRow c={concUm}/></Card>
             </div>
@@ -825,19 +1353,19 @@ export default function App(){
               </Card>
             </div>
 
-            <div className="mt-4">
+            <div className="mt-3">
               <Card title="Claim Processing Density by Department" subtitle="Shows claim flow through departments with processing days">
                 <SankeyDiagram data={scoped} />
               </Card>
             </div>
 
-            <div className="mt-4">
+            <div className="mt-3">
               <Card title="Claim Adjustment Density" subtitle="Provider intensity and density of adjustments (X: Avg Prompt Pay, Y: Domain)">
                 <AdjustmentDensity data={scoped} />
               </Card>
             </div>
 
-            <div className="mt-4 grid gap-3 sm:grid-cols-2">
+            <div className="mt-3 grid gap-2 sm:grid-cols-2">
               <Card title="Prompt Pay Status" subtitle="breakdown by payment status">
                 <ResponsiveContainer width="100%" height={200}>
                   <BarChart data={[
