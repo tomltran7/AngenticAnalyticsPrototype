@@ -1,0 +1,19 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root{
+  --background: 255 255 255;
+  --foreground: 15 23 42;
+  --muted: 241 245 249;
+  --primary: 15 23 42;
+  --primary-foreground: 248 250 252;
+  --border: 226 232 240;
+}
+.bg-background{ background-color: rgb(var(--background)); }
+.text-foreground{ color: rgb(var(--foreground)); }
+.bg-muted{ background-color: rgb(var(--muted)); }
+.text-muted-foreground{ color: rgb(100 116 139); }
+.bg-primary{ background-color: rgb(var(--primary)); }
+.text-primary-foreground{ color: rgb(var(--primary-foreground)); }
+.border{ border-color: rgb(var(--border)); }
